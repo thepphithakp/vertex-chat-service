@@ -1,0 +1,54 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - errcheck        # ห้ามทิ้ง error (C-6 เกิดจากข้อนี้)
+    - govet
+    - staticcheck
+    - ineffassign
+    - unused
+    - bodyclose       # ห้ามลืมปิด http response body
+    - sqlclosecheck
+    - rowserrcheck
+    - noctx           # ห้ามยิง http โดยไม่มี context (S-10 / Phase 7)
+    - errorlint       # บังคับ errors.Is/As แทน type assertion (C-8)
+    - gosec
+    - revive
+    - misspell
+    - nilerr
+    - contextcheck
+
+  settings:
+    errcheck:
+      check-type-assertions: true   # จับ c.Locals("userId").(string) แบบไม่มี ok (C-1)
+    gosec:
+      excludes:
+        - G115
+    revive:
+      rules:
+        - name: exported
+          disabled: true
+
+  exclusions:
+    rules:
+      - path: _test\.go
+        # test ปิด response body ไม่ครบเป็นเรื่องปกติ — app.Test() ไม่ได้เปิด connection จริง
+        linters: [gosec, errcheck, noctx, bodyclose]
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/vertex/chat-service
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

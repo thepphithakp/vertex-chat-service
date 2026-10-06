@@ -1,0 +1,42 @@
+{{- if .Values.httpRoute.enabled }}
+{{- /*
+HTTPRoute — มีสองเส้นทางภายใต้ host เดียวกัน:
+  /api/v1/chat      REST ปกติ (JWT) — ผ่าน Cloudflare Worker proxy ได้ตามปกติ
+  /api/v1/realtime  WebSocket (ticket) — client ต้องต่อ "ตรง" มาที่ host นี้
+                     ข้าม Worker proxy ไปเลย (พิสูจน์แล้วว่า Worker พัง
+                     WebSocket เพราะ fetch() ถูก multiplex บน HTTP/2 ไปยัง
+                     origin เดียวกัน — ดู figure-it-out decision trail)
+                     แต่ก็ยังต้องผ่าน Gateway ตัวนี้เหมือนเดิม แค่ไม่ผ่าน Worker
+*/}}
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ include "chat-service.fullname" . }}
+  labels:
+    {{- include "chat-service.labels" . | nindent 4 }}
+spec:
+  parentRefs:
+    - name: {{ .Values.httpRoute.parentRef.name }}
+      {{- with .Values.httpRoute.parentRef.namespace }}
+      namespace: {{ . }}
+      {{- end }}
+      {{- with .Values.httpRoute.parentRef.sectionName }}
+      sectionName: {{ . }}
+      {{- end }}
+  {{- if not .Values.httpRoute.hostnames }}
+  {{- fail "ต้องส่ง httpRoute.hostnames ตอน deploy — ค่าจริงไม่เก็บใน repo ที่เป็น public" }}
+  {{- end }}
+  hostnames:
+    {{- toYaml .Values.httpRoute.hostnames | nindent 4 }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/v1/chat
+        - path:
+            type: PathPrefix
+            value: /api/v1/realtime/chat
+      backendRefs:
+        - name: {{ include "chat-service.fullname" $ }}
+          port: {{ $.Values.service.port }}
+{{- end }}

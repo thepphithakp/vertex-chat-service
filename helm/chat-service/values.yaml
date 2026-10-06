@@ -1,0 +1,141 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/thepphithakp/vertex-chat-service
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: false
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532
+  fsGroup: 65532
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop: [ALL]
+  readOnlyRootFilesystem: true
+
+service:
+  type: ClusterIP
+  port: 4005
+
+httpRoute:
+  enabled: true
+  parentRef:
+    name: vertex-gateway
+    namespace: ""
+    sectionName: http
+  # ⚠️ ห้ามใส่ค่าจริงลงไฟล์นี้ — repo เป็น public
+  #    ส่งตอน deploy: --set httpRoute.hostnames[0]="${{ secrets.PUBLIC_HOST }}"
+  hostnames: []
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 128Mi
+  requests:
+    cpu: 10m
+    memory: 32Mi
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# --- Lifecycle ---
+#
+# ⚠️ SHUTDOWN_DRAIN_DELAY + SHUTDOWN_TIMEOUT (5+20 = 25s)
+#    < terminationGracePeriodSeconds (45s) ไม่งั้นโดน SIGKILL ก่อนปิดเสร็จ
+#
+# 🔴 replicaCount: 1 โดยตั้งใจ — WebSocket hub เก็บ connection registry ใน
+#    หน่วยความจำของ pod เดียว (ดู internal/adapter/wshub) ถ้าสเกลเกิน 1
+#    replica ตอนนี้ ผู้ใช้ที่ต่อ pod คนละตัวกันจะไม่เห็น real-time fanout
+#    ของกันและกันเลย (แต่ REST ยังทำงานถูกต้องเพราะอ่าน/เขียนฐานข้อมูลจริง)
+#    จุดที่ต้องแก้ก่อน scale-out คือ port.Delivery ตัวเดียว ไม่ใช่ทุกจุดที่เรียกมัน
+replicaCount: 1
+terminationGracePeriodSeconds: 45
+
+livenessProbe:
+  httpGet:
+    path: /livez
+    port: http
+  periodSeconds: 15
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /readyz
+    port: http
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 2
+
+startupProbe:
+  httpGet:
+    path: /livez
+    port: http
+  periodSeconds: 2
+  failureThreshold: 30
+
+shutdown:
+  drainDelay: 5s
+  timeout: 20s
+
+# --- Database ---
+db:
+  host: postgres
+  port: "5432"
+  name: vertex
+  sslMode: disable
+  searchPath: chat
+  credentialsSecret: chat-db-app
+
+jwt:
+  publicKeysSecret: jwt-public-keys
+  issuer: ""
+  audience: ""
+
+# --- Notification ---
+#
+# worker/application layer เรียก notification-service ผ่าน cluster-internal DNS
+notification:
+  serviceURL: http://notification-service:4003
+  tokenSecret: push-service-token
+
+# --- Pet service ---
+#
+# เรียกถามว่าผู้ใช้สองคนมีสัตว์เลี้ยงร่วมกันไหมก่อนเปิดบทสนทนาใหม่
+# tokenSecret ต้องเป็น Secret เดียวกับที่ pet-service ถือฝั่งตรวจ (CHAT_SERVICE_TOKEN)
+petService:
+  serviceURL: http://pet-service:4001
+  tokenSecret: pet-service-token
+
+# --- WebSocket ---
+#
+# ⚠️ ค่าจริงไม่เก็บใน repo ที่เป็น public — ส่งตอน deploy ผ่าน --set
+#    allowedOrigins = origin ของหน้าเว็บ PWA (เช่น https://vertex-pwa.pluem.me)
+#    publicBaseURL  = wss://... เต็มรูปของโดเมน backend เดียวกับที่ REST อื่นใช้
+#                     (ต้องเป็น wss://<host>/api/v1/realtime/chat พอดี)
+ws:
+  allowedOrigins: ""
+  publicBaseURL: ""
+
+env: {}
+
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  scrapeTimeout: 10s
+  additionalLabels:
+    release: prometheus-grafana

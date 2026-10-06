@@ -1,0 +1,199 @@
+name: Build, Push and Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ตรวจว่าไม่มีความลับหลุดเข้า repo
+        run: ./scripts/check-secrets.sh
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Verify go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
+      - name: go vet
+        run: go vet ./...
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: latest
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck ./...
+      - name: Test (race)
+        run: go test -race -count=1 ./...
+
+  build-and-push:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Log in to the Container registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+        with:
+          driver: docker-container
+
+      - name: Extract metadata (tags, labels) for Docker
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest
+
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Create kubeconfig from secret
+        env:
+          KUBECONFIG_CONTENT: ${{ secrets.KUBECONFIG_CONTENT }}
+        run: |
+          mkdir -p ~/.kube
+          printf '%s' "$KUBECONFIG_CONTENT" > ~/.kube/config
+          chmod 600 ~/.kube/config
+          grep -q 'apiVersion' ~/.kube/config || { echo "kubeconfig ว่างหรือไม่ valid"; exit 1; }
+
+      - name: Set KUBECONFIG environment variable
+        run: echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'v1.28.0'
+
+      - name: Verify cluster access
+        run: |
+          kubectl version --client
+          kubectl get pods -n vertex
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: 'v3.12.0'
+
+      - name: Set default namespace in kubeconfig
+        run: kubectl config set-context --current --namespace vertex
+
+      - name: Deploy using Helm
+        run: |
+          set -euo pipefail
+          helm upgrade --install chat-service ./helm/chat-service \
+            --namespace vertex \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set image.tag=sha-${{ github.sha }} \
+            --set httpRoute.hostnames[0]="${{ secrets.PUBLIC_HOST }}" \
+            --set ws.allowedOrigins="${{ secrets.PWA_ORIGIN }}" \
+            --set ws.publicBaseURL="${{ secrets.CHAT_PUBLIC_WS_URL }}" | tee helm-output.txt
+
+      - name: Rollout restart if no change
+        run: |
+          set -euo pipefail
+          if grep -q 'unchanged' helm-output.txt; then
+            kubectl rollout restart deployment chat-service -n vertex
+          fi
+
+      - name: Verify rollout
+        run: |
+          set -euo pipefail
+          kubectl rollout status deployment/chat-service -n vertex --timeout=180s
+
+          want="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:sha-${{ github.sha }}"
+          got=$(kubectl get deployment chat-service -n vertex \
+            -o jsonpath='{.spec.template.spec.containers[0].image}')
+          echo "ต้องการ: $want"
+          echo "ได้จริง: $got"
+          if [ "$want" != "$got" ]; then
+            echo "::error::image ที่รันอยู่ไม่ตรงกับ commit นี้ — deploy ไม่ขึ้นจริง"
+            exit 1
+          fi
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: deploy
+    if: always()
+    steps:
+      - name: แจ้งผล deploy เข้า Discord
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_DEPLOY_WEBHOOK }}
+          RESULT: ${{ needs.deploy.result }}
+          SERVICE: chat-service
+          COMMIT_MSG: ${{ github.event.head_commit.message }}
+        run: |
+          set -euo pipefail
+          if [ -z "${WEBHOOK:-}" ]; then
+            echo "::warning::ยังไม่ได้ตั้ง secret DISCORD_DEPLOY_WEBHOOK — ข้ามการแจ้งเตือน"
+            exit 0
+          fi
+          case "$RESULT" in
+            success)   color=3066993;  icon="✅"; text="deploy สำเร็จ" ;;
+            failure)   color=15158332; icon="❌"; text="deploy ล้มเหลว" ;;
+            cancelled) color=9807270;  icon="⚪"; text="deploy ถูกยกเลิก" ;;
+            skipped)   color=15158332; icon="❌"; text="deploy ไม่ได้รัน — ขั้นก่อนหน้าล้ม" ;;
+            *)         color=9807270;  icon="❔"; text="deploy จบด้วยสถานะ $RESULT" ;;
+          esac
+          jq -n \
+            --arg title "$icon $SERVICE — $text" \
+            --arg sha "${GITHUB_SHA:0:7}" \
+            --arg msg "$(printf '%s' "$COMMIT_MSG" | head -1 | cut -c1-120)" \
+            --arg who "${GITHUB_ACTOR}" \
+            --arg url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --argjson color "$color" \
+            '{embeds:[{
+               title: $title,
+               url: $url,
+               color: $color,
+               fields: [
+                 {name:"commit", value:("`"+$sha+"` "+$msg), inline:false},
+                 {name:"โดย",    value:$who,  inline:true},
+                 {name:"image",  value:("sha-"+$sha), inline:true}
+               ],
+               footer:{text:"namespace vertex"}
+             }]}' > payload.json
+          curl --fail-with-body -sS -X POST \
+            -H 'Content-Type: application/json' \
+            -d @payload.json "$WEBHOOK"
