@@ -52,6 +52,7 @@ func NewApp(db *gorm.DB, cfg config.Config, auth middleware.AuthConfig) (*fiber.
 	notify := notifier.NewHTTPNotifier(cfg.Notification.ServiceURL, cfg.Notification.Token)
 
 	svc := application.NewChatService(conversations, messages, reads, profiles, petLink, hub, notify)
+	hub.SetPresenceNotifier(svc) // circular ที่ระดับค่า ไม่ใช่ import — ดู hub.go
 	tickets := application.NewTicketService()
 
 	chatH := handler.NewChatHandler(svc, profiles)

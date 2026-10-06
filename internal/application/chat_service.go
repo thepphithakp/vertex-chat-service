@@ -185,6 +185,28 @@ func (s *ChatService) MarkRead(ctx context.Context, self domain.UserID, convID d
 	return nil
 }
 
+// NotifyPresenceChange ทำให้ ChatService เป็น port.PresenceNotifier ของ hub —
+// hub เรียกเข้ามาตอนจำนวน connection ของ user เปลี่ยนจาก 0 เป็น 1 หรือ
+// กลับกัน แจ้งเฉพาะคู่สนทนาที่มีอยู่แล้ว (ListSummaries) ไม่มี peer list
+// แยกต่างหากให้ดึง จึงยืมคิวรีเดิมที่มีอยู่แล้วแทนที่จะเขียน SQL ใหม่
+//
+// 🔴 ไม่กัน flicker ตอนสายหลุดๆ ติดๆ (เช่น เน็ตมือถือไม่นิ่ง) ด้วยเจตนา —
+//
+//	debounce เพิ่มความซับซ้อนที่ยังไม่เห็นว่าจำเป็นจริง ถ้าพบว่ากระพริบถี่
+//	จนรำคาญจริงค่อยเพิ่มทีหลัง ไม่ใช่เผื่อไว้ล่วงหน้า
+func (s *ChatService) NotifyPresenceChange(ctx context.Context, user domain.UserID, online bool) {
+	summaries, err := s.conversations.ListSummaries(ctx, user)
+	if err != nil {
+		slog.ErrorContext(ctx, "broadcast presence ไม่ได้: หารายชื่อคู่สนทนาไม่สำเร็จ",
+			"user_id", user, "error", err)
+		return
+	}
+	frame := port.PresenceFrame{T: "presence", UserID: string(user), Online: online}
+	for _, c := range summaries {
+		s.delivery.Deliver(c.Peer, frame)
+	}
+}
+
 func (s *ChatService) assertMember(ctx context.Context, self domain.UserID, convID domain.ConversationID) error {
 	conv, err := s.conversations.Get(ctx, convID)
 	if err != nil {

@@ -58,3 +58,15 @@ type ErrorFrame struct {
 }
 
 func (ErrorFrame) FrameType() string { return "error" }
+
+// PresenceFrame บอกว่า user คนหนึ่งต่อ/หลุดจากแอปทั้งหมด (ไม่ใช่ทีละ tab) —
+// "online" คือมี socket เชื่อมอยู่อย่างน้อยหนึ่งเส้น ไม่ได้แปลว่ากำลังเปิด
+// หน้าสนทนานี้อยู่พอดี ยิงให้เฉพาะคู่สนทนาที่มีอยู่แล้วเท่านั้น ไม่ broadcast
+// กว้างกว่านั้น
+type PresenceFrame struct {
+	T      string `json:"t"`
+	UserID string `json:"userId"`
+	Online bool   `json:"online"`
+}
+
+func (PresenceFrame) FrameType() string { return "presence" }

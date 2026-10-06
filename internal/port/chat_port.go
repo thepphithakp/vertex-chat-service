@@ -56,6 +56,20 @@ type Delivery interface {
 	DeliverExcept(user domain.UserID, exceptSocket string, frame ServerFrame) (reached int)
 }
 
+// PresenceNotifier คือทิศทางตรงข้ามของ Delivery — hub (adapter) เรียกเข้ามา
+// หา application ตอนจำนวน connection ของ user คนหนึ่งเปลี่ยนจาก 0 เป็น 1
+// (online) หรือ 1 เป็น 0 (offline) เท่านั้น ไม่ใช่ทุกครั้งที่ tab เปิด/ปิด
+// เพราะ hub เองไม่รู้จัก conversation ของใครเลย (จงใจให้โง่ ไม่พึ่งพา DB)
+// ฝั่งที่รู้ว่าต้องแจ้งใครบ้างคือ application ผ่าน ConversationRepository
+//
+// ตั้งค่าแบบ setter หลังสร้างทั้ง hub และ ChatService เสร็จแล้ว (ดู
+// bootstrap/app.go) เพราะสองฝั่งพึ่งพากันเป็นวงกลมที่ระดับค่า (hub เป็น
+// Delivery ของ ChatService, ChatService เป็น PresenceNotifier ของ hub)
+// ไม่ใช่ที่ระดับ import — ไม่มี cycle จริง
+type PresenceNotifier interface {
+	NotifyPresenceChange(ctx context.Context, user domain.UserID, online bool)
+}
+
 // Notifier ยิง push + in-app feed ผ่าน notification-service — รูปแบบเดียวกับ
 // notifier.HTTPNotifier ของ ev-service
 type Notifier interface {

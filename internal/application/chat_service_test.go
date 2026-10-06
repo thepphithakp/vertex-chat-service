@@ -13,8 +13,9 @@ import (
 )
 
 type fakeConvRepo struct {
-	byPair map[domain.Pair]domain.Conversation
-	byID   map[domain.ConversationID]domain.Conversation
+	byPair    map[domain.Pair]domain.Conversation
+	byID      map[domain.ConversationID]domain.Conversation
+	summaries []domain.ConversationSummary
 }
 
 func newFakeConvRepo() *fakeConvRepo {
@@ -40,7 +41,7 @@ func (r *fakeConvRepo) Get(ctx context.Context, id domain.ConversationID) (domai
 }
 
 func (r *fakeConvRepo) ListSummaries(ctx context.Context, self domain.UserID) ([]domain.ConversationSummary, error) {
-	return nil, nil
+	return r.summaries, nil
 }
 
 type NotFoundStub struct{}
@@ -204,6 +205,45 @@ func TestSendMessage_RejectsNonMember(t *testing.T) {
 	_, err := svc.SendMessage(context.Background(), "stranger", c.ID, "client-1", "hello")
 	if err == nil {
 		t.Fatal("ต้อง reject คนที่ไม่ใช่สมาชิกของบทสนทนา")
+	}
+}
+
+func TestNotifyPresenceChange_DeliversToEveryExistingPeer(t *testing.T) {
+	conv := newFakeConvRepo()
+	conv.summaries = []domain.ConversationSummary{
+		{Peer: "peerA"},
+		{Peer: "peerB"},
+	}
+	delivery := newFakeDelivery(nil)
+	svc := NewChatService(conv, newFakeMsgRepo(), &fakeReadRepo{}, &fakeProfileRepo{},
+		&fakePetLink{}, delivery, &fakeNotifier{})
+
+	svc.NotifyPresenceChange(context.Background(), "self", true)
+
+	if len(delivery.frames) != 2 {
+		t.Fatalf("ต้อง deliver ให้ทุกคู่สนทนาที่มีอยู่ (2 คน) ได้ %d frame", len(delivery.frames))
+	}
+	for _, f := range delivery.frames {
+		pf, ok := f.(port.PresenceFrame)
+		if !ok {
+			t.Fatalf("frame ต้องเป็น PresenceFrame ได้ %T", f)
+		}
+		if pf.UserID != "self" || !pf.Online {
+			t.Fatalf("PresenceFrame ผิด: %+v", pf)
+		}
+	}
+}
+
+func TestNotifyPresenceChange_NoPeersIsNoOp(t *testing.T) {
+	conv := newFakeConvRepo() // summaries ว่าง — ยังไม่มีใครเคยเปิดแชทกับ self เลย
+	delivery := newFakeDelivery(nil)
+	svc := NewChatService(conv, newFakeMsgRepo(), &fakeReadRepo{}, &fakeProfileRepo{},
+		&fakePetLink{}, delivery, &fakeNotifier{})
+
+	svc.NotifyPresenceChange(context.Background(), "self", false)
+
+	if len(delivery.frames) != 0 {
+		t.Fatalf("ไม่มีคู่สนทนาเลย ต้องไม่ deliver อะไร ได้ %d frame", len(delivery.frames))
 	}
 }
 

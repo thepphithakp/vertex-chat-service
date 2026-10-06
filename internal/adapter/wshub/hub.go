@@ -1,6 +1,7 @@
 package wshub
 
 import (
+	"context"
 	"encoding/json"
 	"log/slog"
 	"sync"
@@ -57,10 +58,24 @@ func (c *conn) writeJSON(v any) error {
 type Hub struct {
 	mu     sync.RWMutex
 	byUser map[domain.UserID]map[string]*conn
+
+	// presence ว่างได้ (nil-safe) — ไม่ใช่ทุก deployment ต้องสนใจ presence
+	// hub เองไม่รู้จัก conversation ของใครเลยโดยตั้งใจ แค่บอกว่า "user นี้
+	// จำนวนสายเปลี่ยนจาก 0 เป็น 1 (online) หรือกลับกัน (offline)" แล้วปล่อย
+	// ให้ application (ที่รู้จัก ConversationRepository) ตัดสินใจว่าต้อง
+	// แจ้งใครบ้าง — ดู port.PresenceNotifier
+	presence port.PresenceNotifier
 }
 
 func NewHub() *Hub {
 	return &Hub{byUser: make(map[domain.UserID]map[string]*conn)}
+}
+
+// SetPresenceNotifier ตั้งค่าทีหลังตอน bootstrap เพราะ ChatService (ผู้ที่จะ
+// มาเป็น PresenceNotifier) ต้องใช้ hub นี้เป็น Delivery ของตัวเองก่อน —
+// สองฝั่งพึ่งพากันเป็นวงกลมที่ระดับค่า ไม่ใช่ import จึงแก้ด้วย setter
+func (h *Hub) SetPresenceNotifier(p port.PresenceNotifier) {
+	h.presence = p
 }
 
 func (h *Hub) register(userID domain.UserID, ws *websocket.Conn) *conn {
@@ -70,20 +85,34 @@ func (h *Hub) register(userID domain.UserID, ws *websocket.Conn) *conn {
 	if h.byUser[userID] == nil {
 		h.byUser[userID] = make(map[string]*conn)
 	}
+	cameOnline := len(h.byUser[userID]) == 0
 	h.byUser[userID][c.socketID] = c
 	h.mu.Unlock()
+
+	// สายแรกของ user คนนี้ (ไม่ใช่สายที่สองของ tab อื่น) — แจ้ง online
+	// ยิง async เพราะต้องคิวรี DB หา peer ไม่ควรหน่วง WS upgrade ที่เพิ่งสำเร็จ
+	if cameOnline && h.presence != nil {
+		go h.presence.NotifyPresenceChange(context.Background(), userID, true)
+	}
 
 	return c
 }
 
 func (h *Hub) unregister(c *conn) {
 	h.mu.Lock()
-	defer h.mu.Unlock()
+	wentOffline := false
 	if socks, ok := h.byUser[c.userID]; ok {
 		delete(socks, c.socketID)
 		if len(socks) == 0 {
 			delete(h.byUser, c.userID)
+			wentOffline = true
 		}
+	}
+	h.mu.Unlock()
+
+	// สายสุดท้ายของ user คนนี้หลุด (ไม่ใช่ปิดแค่ tab เดียวจากหลายๆ tab)
+	if wentOffline && h.presence != nil {
+		go h.presence.NotifyPresenceChange(context.Background(), c.userID, false)
 	}
 }
 
