@@ -161,11 +161,10 @@ func (s *ChatService) MarkRead(ctx context.Context, self domain.UserID, convID d
 		return err
 	}
 
-	conv, err := s.conversations.Get(ctx, convID)
-	if err != nil {
-		return nil // อ่านสำเร็จแล้ว แค่ fanout ไม่ได้ ไม่ควรทำให้ request นี้ fail
-	}
-	if peer, ok := conv.Pair.Other(self); ok {
+	// อ่านสำเร็จแล้ว แค่ fanout ไม่ได้ ไม่ควรทำให้ request นี้ fail จึง log แล้วปล่อยผ่าน
+	if conv, err := s.conversations.Get(ctx, convID); err != nil {
+		slog.ErrorContext(ctx, "fanout read receipt ไม่ได้: หาบทสนทนาไม่เจอ", "error", err)
+	} else if peer, ok := conv.Pair.Other(self); ok {
 		s.delivery.Deliver(peer, port.ChatReadFrame{
 			T: "chat.read", ConversationID: convIDStr(convID), UserID: string(self),
 			ReadThroughAt: through.UTC().Format(time.RFC3339),
