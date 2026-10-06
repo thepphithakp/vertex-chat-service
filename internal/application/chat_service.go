@@ -207,6 +207,25 @@ func (s *ChatService) NotifyPresenceChange(ctx context.Context, user domain.User
 	}
 }
 
+// ListPeerIDs คืนรายชื่อคู่สนทนาทั้งหมดของ self — ใช้ตอน client เพิ่งต่อ
+// WebSocket สำเร็จ เพื่อถาม hub ทีละคนว่าใคร online อยู่บ้างตอนนี้ (ดู
+// wshub.Handle) ไม่ใช่เส้นทางเดียวกับ NotifyPresenceChange ที่ hub เรียก
+// กลับมาตอนมีการเปลี่ยนแปลงจริง — อันนี้เป็นฝั่ง client ใหม่ถามหา snapshot
+// ตอนเริ่มต้น เพราะ presence frame บอกแค่ "เปลี่ยนแปลง" ไม่มี snapshot ปัจจุบัน
+// ติดมาด้วย ถ้าไม่ sync ตอนต่อสาย client จะไม่รู้ว่าใคร online อยู่ก่อนหน้า
+// จนกว่าจะมีการเปลี่ยนแปลงเกิดขึ้นจริงหลังจากนั้น
+func (s *ChatService) ListPeerIDs(ctx context.Context, self domain.UserID) ([]domain.UserID, error) {
+	summaries, err := s.conversations.ListSummaries(ctx, self)
+	if err != nil {
+		return nil, err
+	}
+	peers := make([]domain.UserID, len(summaries))
+	for i, c := range summaries {
+		peers[i] = c.Peer
+	}
+	return peers, nil
+}
+
 func (s *ChatService) assertMember(ctx context.Context, self domain.UserID, convID domain.ConversationID) error {
 	conv, err := s.conversations.Get(ctx, convID)
 	if err != nil {

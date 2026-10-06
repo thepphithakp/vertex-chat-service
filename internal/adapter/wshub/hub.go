@@ -142,3 +142,17 @@ func (h *Hub) DeliverExcept(userID domain.UserID, exceptSocket string, frame por
 	}
 	return reached
 }
+
+// IsOnline คือ snapshot ครั้งเดียว ใช้ตอน client เพิ่งต่อสายสำเร็จและอยาก
+// รู้สถานะปัจจุบันของคู่สนทนาทุกคนทันที (ดู upgrade.go) ก่อนหน้านี้ Hub
+// ไม่มี query แบบนี้เลยโดยตั้งใจ (ดูคอมเมนต์ที่ port.Delivery) เพราะกลัว
+// check-then-act race ตอนตัดสินใจว่าจะ push fallback ให้ SendMessage ไหม —
+// แต่ที่นี่เป็นคนละสถานการณ์ ผลลัพธ์ผิดพลาดได้แค่ "เพี้ยนชั่วคราว" (เผลอ
+// บอกว่า online/offline คลาดกับความจริงไม่กี่มิลลิวินาที) แล้ว presence
+// frame รอบถัดไปจะแก้ให้เองเสมอ ไม่ใช่การตัดสินใจที่ทำพลาดแล้วแก้คืนไม่ได้
+// แบบการส่ง push ซ้ำหรือไม่ส่งเลย
+func (h *Hub) IsOnline(userID domain.UserID) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.byUser[userID]) > 0
+}

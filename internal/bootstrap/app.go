@@ -75,7 +75,7 @@ func NewApp(db *gorm.DB, cfg config.Config, auth middleware.AuthConfig) (*fiber.
 	app.Get("/api/v1/realtime/chat", websocket.New(func(ws *websocket.Conn) {
 		userID, _ := ws.Locals("chatUserID").(domain.UserID)
 		jwtExp, _ := ws.Locals("chatJWTExp").(time.Time)
-		wshub.Handle(hub, userID, jwtExp)(ws)
+		wshub.Handle(hub, userID, jwtExp, svc.ListPeerIDs)(ws)
 	}))
 
 	return app, health
