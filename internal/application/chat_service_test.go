@@ -73,10 +73,14 @@ func (r *fakeReadRepo) MarkRead(ctx context.Context, convID domain.ConversationI
 	return nil
 }
 
-type fakeProfileRepo struct{}
+type fakeProfileRepo struct{ names map[domain.UserID]string }
 
 func (r *fakeProfileRepo) Touch(ctx context.Context, user domain.UserID, displayName string) error {
 	return nil
+}
+
+func (r *fakeProfileRepo) GetDisplayName(ctx context.Context, user domain.UserID) (string, error) {
+	return r.names[user], nil
 }
 
 type fakePetLink struct{ shared bool }

@@ -143,7 +143,19 @@ func (s *ChatService) SendMessage(ctx context.Context, self domain.UserID, convI
 	if reached == 0 && s.pushGate.allow(string(peer)+":"+convIDStr(convID)) {
 		go func() {
 			ctx := context.WithoutCancel(ctx)
-			if err := s.notifier.Notify(ctx, peer, "ข้อความใหม่", preview(body, 120),
+			// title เดิมเป็น "ข้อความใหม่" เฉยๆ ไม่บอกว่าใครส่ง — ผู้ใช้เปิด
+			// แจ้งเตือนมาแล้วไม่รู้ว่าต้องรีบเปิดอ่านไหม จึงดึงชื่อผู้ส่งมาใส่
+			// title แทน ชื่อว่างได้ (ยังไม่เคย Touch) จึง fallback เป็น
+			// "มีข้อความใหม่" คำเดิมไว้เผื่อ
+			senderName, err := s.profiles.GetDisplayName(ctx, self)
+			if err != nil {
+				slog.ErrorContext(ctx, "หาชื่อผู้ส่งสำหรับ push ไม่สำเร็จ ใช้ชื่อสำรองแทน", "error", err)
+			}
+			title := "มีข้อความใหม่"
+			if senderName != "" {
+				title = senderName
+			}
+			if err := s.notifier.Notify(ctx, peer, title, preview(body, 120),
 				"chat-conv-"+convIDStr(convID), "/chat/"+convIDStr(convID)); err != nil {
 				slog.ErrorContext(ctx, "ส่ง push แจ้งข้อความใหม่ไม่สำเร็จ", "error", err)
 			}

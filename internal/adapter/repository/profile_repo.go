@@ -2,6 +2,7 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"gorm.io/gorm"
@@ -34,4 +35,19 @@ func (r *GORMProfileRepository) Touch(ctx context.Context, user domain.UserID, d
 		Columns:   []clause.Column{{Name: "user_id"}},
 		DoUpdates: clause.AssignmentColumns([]string{"display_name", "updated_at"}),
 	}).Create(&row).Error
+}
+
+// GetDisplayName คืนค่าว่างเมื่อยังไม่เคยมีแถว (ErrRecordNotFound) แทนที่จะ
+// โยน error ออกไป — ผู้เรียก (push notification title) ต้อง fallback เองอยู่แล้ว
+// ไม่ถือเป็นเหตุขัดข้อง
+func (r *GORMProfileRepository) GetDisplayName(ctx context.Context, user domain.UserID) (string, error) {
+	var row profileRow
+	err := r.db.WithContext(ctx).Where("user_id = ?", string(user)).First(&row).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return row.DisplayName, nil
 }

@@ -36,6 +36,10 @@ type ProfileRepository interface {
 	// Touch อัปเดตชื่อของ user เอง — เรียกทุก request ที่ยืนยันตัวตนแล้ว แต่ gate
 	// ด้วย TTL ในชั้น application ไม่ให้เขียนทุก request จริงๆ
 	Touch(ctx context.Context, user domain.UserID, displayName string) error
+	// GetDisplayName คืนชื่อที่แสดงของ user ให้ชื่อว่างถ้ายังไม่เคย Touch เลย
+	// (ยังไม่เคยยิง request ที่ยืนยันตัวตนผ่าน chat-service มาก่อน) ผู้เรียก
+	// ต้อง fallback เองตอนชื่อว่าง
+	GetDisplayName(ctx context.Context, user domain.UserID) (string, error)
 }
 
 // PetLink ตอบคำถามเดียวที่ chat-service เองตอบไม่ได้: สองคนนี้มีสัตว์เลี้ยง
