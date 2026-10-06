@@ -14,11 +14,20 @@ import (
 )
 
 const (
-	pingInterval = 25 * time.Second
-	// readDeadline ต้องนานกว่า pingInterval พอให้ client ตอบ pong ทัน —
-	// cloudflared/Envoy ตัด connection ที่เงียบนานกว่านี้อยู่แล้ว ping ที่ถี่
-	// กว่านั้นคือสิ่งที่กันไว้ไม่ให้โดนตัดก่อน
-	readDeadline = 60 * time.Second
+	// เดิม 25s/60s คิดถึงแค่ไม่ให้ cloudflared/Envoy ตัด connection ก่อนเวลา
+	// (ยังเหลือเวลาเกิน) แต่ไม่ได้คิดถึงอีกด้าน: ค่านี้คือเวลาสูงสุดที่ hub
+	// จะยัง "เข้าใจผิด" ว่า client ตายแล้วยังต่ออยู่ — ซึ่งทำให้ SendMessage
+	// เห็น reached > 0 แล้วข้าม push fallback ทั้งที่ client (เช่น iOS Safari
+	// ที่ถูกพับแอป/ล็อกหน้าจอ) ไม่ได้รับอะไรจริงมาสักพักแล้ว ผลคือข้อความ
+	// เงียบหายจนกว่าผู้รับจะเปิดแอปเอง — บั๊กที่เจอจริงจาก log (ไม่มี push
+	// attempt ถูกยิงเลยทั้งที่คู่สนทนาไม่ได้เปิดแอปดูอยู่)
+	//
+	// ลดเหลือ 10s/25s: ยังมีช่องว่างเหลือเฟือก่อนชน infra idle timeout
+	// (cloudflared/Envoy default ~5 นาที ไม่มี BackendTrafficPolicy กำหนดเอง)
+	// แต่ลดเวลาที่ hub จะ "เข้าใจผิด" ลงจากสูงสุด ~85s เหลือ ~35s
+	pingInterval = 10 * time.Second
+	// readDeadline ต้องนานกว่า pingInterval พอให้ client ตอบ pong ทัน
+	readDeadline = 25 * time.Second
 )
 
 // conn คือ socket หนึ่งเส้นของ user หนึ่งคน (คนเดียวเปิดได้หลายแท็บ/อุปกรณ์
