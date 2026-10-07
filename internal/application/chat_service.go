@@ -139,12 +139,18 @@ func (s *ChatService) SendMessage(ctx context.Context, self domain.UserID, convI
 	frame := port.ChatMessageFrame{T: "chat.message", Message: toWireMessage(msg)}
 	s.delivery.DeliverExcept(self, "", frame) // อุปกรณ์อื่นของผู้ส่งเอง (ถ้ามี)
 	reached := s.delivery.Deliver(peer, frame)
+	peerReachable := s.delivery.Reachable(peer)
 
 	// เดิมเช็ก reached == 0 — ผิดตอน peer มีสายเปิดอยู่แต่หน้าแอปถูกพับ (iOS
 	// ปิดหน้าจอ/สลับแอปไม่ได้แปลว่า "ไม่มีใครต่ออยู่" อีกต่อไปแล้ว แต่แปลว่า
 	// "ไม่มีสายไหนของ peer ที่หน้าแอปโชว์อยู่ตอนนี้" — Reachable() ตอบคำถาม
 	// นั้นตรงๆ (ดู root-cause ใน port.Delivery comment)
-	if !s.delivery.Reachable(peer) && s.pushGate.allow(string(peer)+":"+convIDStr(convID)) {
+	//
+	// 🔧 debug ชั่วคราวสำหรับไล่บั๊ก push noti ที่ขึ้นแค่บางข้อความ — ลบออก
+	// หลังยืนยัน root cause แล้ว
+	slog.DebugContext(ctx, "push decision", "peer_id", peer, "reached", reached, "peer_reachable", peerReachable)
+
+	if !peerReachable && s.pushGate.allow(string(peer)+":"+convIDStr(convID)) {
 		if reached > 0 {
 			// สัญญาณยืนยันว่า fix นี้กำลังทำงานจริง: ไม่ใช่แค่ "ไม่มีสายเลย"
 			// แต่ "มีสายแต่ไม่มีอันไหนอยู่ foreground" — เคสที่ bug เดิมพลาด
