@@ -60,12 +60,17 @@ func Handle(h *Hub, userID domain.UserID, jwtExp time.Time, peersOf PeerLister) 
 		defer close(stop)
 		go pingLoop(c, jwtExp, stop)
 
-		// read loop — v1 ไม่มี client frame ที่มีความหมายนอกจาก pong (ซึ่ง
-		// SetPongHandler ข้างบนจัดการให้แล้วที่ชั้น protocol) อ่านทิ้งไปเรื่อยๆ
-		// เพื่อให้ ReadDeadline/PongHandler ทำงาน และรู้ตัวตอน client ปิด
+		// read loop — frame เดียวที่มีความหมายคือ client.visibility (ดู
+		// client_frame.go) นอกนั้นทิ้งเงียบๆ (parseClientFrame คืน nil)
+		// ยังต้องอ่านวนอยู่ดีเพื่อให้ ReadDeadline/PongHandler ทำงาน และรู้ตัว
+		// ตอน client ปิด
 		for {
-			if _, _, err := ws.ReadMessage(); err != nil {
+			_, data, err := ws.ReadMessage()
+			if err != nil {
 				return
+			}
+			if f := parseClientFrame(data); f != nil {
+				h.setForeground(c, !f.Hidden)
 			}
 		}
 	}

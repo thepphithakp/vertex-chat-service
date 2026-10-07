@@ -29,6 +29,17 @@ const (
 	pingInterval = 10 * time.Second
 	// readDeadline ต้องนานกว่า pingInterval พอให้ client ตอบ pong ทัน
 	readDeadline = 25 * time.Second
+
+	// foregroundTTL คือป้าย foreground ที่ client รายงานมาแล้วถือว่ายังเชื่อ
+	// ได้นานแค่ไหน — ตั้งใจแยกจาก pingInterval/readDeadline ข้างบน ไม่ผูกกับ
+	// ping/pong เพราะนั่นคือสิ่งที่พิสูจน์แล้วว่า "รอดได้อิสระจากการที่ JS ฝั่ง
+	// client จะยังทำงานอยู่จริงไหม" (รากของบั๊กที่ comment ข้างบนพูดถึง) —
+	// ป้าย foreground ต้องมีเวลาหมดอายุของตัวเอง ไม่ใช่ยืมของ ping/pong มาเชื่อ
+	//
+	// client รายงานซ้ำทุก WATCHDOG_EVERY (20s อยู่ใน chatSocket.ts) ค่านี้
+	// ยอมให้พลาดไปหนึ่งรอบรายงานบวก RTT โดยไม่ผิดทิศทาง (พลาดแล้วเอียงไปทาง
+	// "ไม่ reachable" เสมอ ไม่ใช่เอียงไปทาง foreground)
+	foregroundTTL = 45 * time.Second
 )
 
 // conn คือ socket หนึ่งเส้นของ user หนึ่งคน (คนเดียวเปิดได้หลายแท็บ/อุปกรณ์
@@ -39,6 +50,38 @@ type conn struct {
 	userID   domain.UserID
 	ws       *websocket.Conn
 	writeMu  sync.Mutex
+
+	// foreground + lastVisibilityAt คือสัญญาณ Page Visibility ที่ client
+	// รายงานเข้ามาเอง (ดู client_frame.go) เขียน/อ่านผ่าน h.mu เดียวกับที่
+	// คุม byUser ไม่แยก mutex ใหม่ เพื่อไม่ให้มีลำดับ lock สองอันต้องจำ
+	//
+	// 🔴 zero value: lastVisibilityAt เป็น zero time (ยังไม่เคยรายงานเลย)
+	// ต้องถือว่า "ไม่รู้" เสมอ ไม่ใช่ foreground แม้ foreground bool จะ
+	// zero-value เป็น false อยู่แล้วก็ตาม — ต้องเช็ค lastVisibilityAt ผ่าน
+	// reachable() ก่อนเชื่อ foreground เสมอ ไม่อ่าน foreground ตรงๆ ที่ไหนเลย
+	foreground       bool
+	lastVisibilityAt time.Time
+}
+
+// setForeground บันทึกป้ายที่ client รายงานมา เรียกจาก read loop ของ conn
+// นี้เท่านั้น (ดู upgrade.go) — idempotent โดยธรรมชาติ รายงานซ้ำค่าเดิมหรือ
+// มาถี่แค่ไหนก็แค่เขียนทับ ไม่มี counter หรือ state ที่ต้องกังวลเรื่อง toggle
+// ผิดจังหวะ
+func (h *Hub) setForeground(c *conn, foreground bool) {
+	h.mu.Lock()
+	c.foreground = foreground
+	c.lastVisibilityAt = time.Now()
+	h.mu.Unlock()
+}
+
+// reachable ตอบว่า conn เส้นนี้ควรนับเป็น "มีคนมองอยู่จริง" ไหม ต้องเรียก
+// ภายใต้ h.mu (RLock พอ อ่านอย่างเดียว) ผู้เรียกต้องถือ lock เอง — ไม่ lock
+// ในนี้เพราะ Reachable ต้องวน conn หลายตัวของ user เดียวกันภายใต้ lock เดียว
+func (c *conn) reachable(now time.Time) bool {
+	if c.lastVisibilityAt.IsZero() || now.Sub(c.lastVisibilityAt) > foregroundTTL {
+		return false
+	}
+	return c.foreground
 }
 
 func (c *conn) writeJSON(v any) error {
@@ -155,4 +198,29 @@ func (h *Hub) IsOnline(userID domain.UserID) bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return len(h.byUser[userID]) > 0
+}
+
+// Reachable บอกว่า user คนนี้มีอย่างน้อยหนึ่ง conn ที่เชื่อได้ว่า foreground
+// อยู่ตอนนี้ไหม — ต่างจาก IsOnline ที่แค่บอกว่ามีสายเปิดอยู่เฉยๆ (พิสูจน์แล้ว
+// จาก production ว่าไม่พอ: iOS เก็บสายไว้เปิดได้แม้พับแอปไปแล้ว conn.writeJSON
+// ฝั่ง server ก็ยัง "สำเร็จ" อยู่ดี)
+//
+// นี่คือ query แยกต่างหากที่ comment เดิมของ port.Delivery เคยบอกว่าจงใจ
+// เลี่ยง (กัน check-then-act race) แต่เป็นคนละสถานการณ์กับที่ comment นั้น
+// พูดถึง: reached ไม่มีทางตอบคำถามนี้ได้ถูกไม่ว่าจะจับจังหวะดีแค่ไหน เพราะ
+// "เขียนลง socket สำเร็จ" กับ "มีคนมองอยู่จริง" เป็นคนละข้อเท็จจริงกันโดย
+// โครงสร้าง ไม่ใช่ปัญหาเรื่องจังหวะ ส่วนที่เป็น race จริง (foreground เปลี่ยน
+// ระหว่าง Deliver กับ Reachable ไม่กี่ ms) ผลผิดพลาดได้แค่ "เพี้ยนชั่วคราว"
+// (push เกินจำเป็นหนึ่งครั้ง หรือพลาดหนึ่งครั้งแล้วรอบถัดไปถูกต้องเอง) ไม่ใช่
+// การตัดสินใจที่แก้คืนไม่ได้ — เหมือนเหตุผลที่ IsOnline ข้างบนให้ไว้ทุกประการ
+func (h *Hub) Reachable(userID domain.UserID) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	now := time.Now()
+	for _, c := range h.byUser[userID] {
+		if c.reachable(now) {
+			return true
+		}
+	}
+	return false
 }

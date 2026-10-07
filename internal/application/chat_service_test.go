@@ -93,6 +93,12 @@ func (p *fakePetLink) SharePet(ctx context.Context, a, b domain.UserID, petID uu
 type fakeDelivery struct {
 	reached map[domain.UserID]int
 	frames  []port.ServerFrame
+
+	// reachable เว้นว่างได้ (nil) — เทสเดิมที่ไม่สนใจ background-signal ยัง
+	// ผ่านได้โดยไม่ต้องแก้ เพราะ Reachable() fallback ไปดู reached>0 แทน
+	// (ดูเหตุผลที่ Reachable ข้างล่าง) ตั้งค่านี้ชัดเจนเฉพาะเทสที่ต้องแยกสอง
+	// กรณีออกจากกันจริงๆ (มีสายแต่ background)
+	reachable map[domain.UserID]bool
 }
 
 func newFakeDelivery(reached map[domain.UserID]int) *fakeDelivery {
@@ -102,6 +108,16 @@ func newFakeDelivery(reached map[domain.UserID]int) *fakeDelivery {
 func (d *fakeDelivery) Deliver(user domain.UserID, frame port.ServerFrame) int {
 	d.frames = append(d.frames, frame)
 	return d.reached[user]
+}
+
+// Reachable: ถ้าเทสตั้ง reachable ไว้ชัดเจนใช้ค่านั้น ไม่งั้น fallback เป็น
+// reached[user] > 0 — ทำให้เทสเดิมทั้งหมดที่เขียนก่อนมี background-signal
+// ยังสื่อความหมายเดิม (ต่อสายอยู่ = reachable) โดยไม่ต้องแก้สักบรรทัด
+func (d *fakeDelivery) Reachable(user domain.UserID) bool {
+	if d.reachable != nil {
+		return d.reachable[user]
+	}
+	return d.reached[user] > 0
 }
 
 func (d *fakeDelivery) DeliverExcept(user domain.UserID, exceptSocket string, frame port.ServerFrame) int {
@@ -196,6 +212,30 @@ func TestSendMessage_PushesOnlyWhenPeerNotConnected(t *testing.T) {
 	if got := notifier.calls.Load(); got != 0 {
 		t.Fatalf("peer ต่อ socket อยู่ (reached=1) ไม่ควร push เลย ได้ %d ครั้ง", got)
 	}
+}
+
+// TestSendMessage_PushesWhenConnectedButBackgrounded pin บั๊กจริงที่เจอจาก
+// production log: peer มีสายเปิดอยู่ (reached=1) แต่ทุกสายนั้นอยู่ background
+// (เช่น iOS Safari ที่ถูกพับแอป — OS ยังรับ write เข้า socket ได้สำเร็จทั้งที่
+// หน้าแอปไม่ได้รับอะไรเลย) ต้องยังได้ push อยู่ดี ต่างจาก
+// TestSendMessage_PushesOnlyWhenPeerNotConnected ข้างบนตรงที่ reached เท่ากัน
+// (1) แต่ reachable ต่างกัน — ถ้าเทสนี้ผ่านแปลว่า push ตัดสินใจจาก Reachable()
+// จริง ไม่ได้แอบอิง reached อยู่ดี
+func TestSendMessage_PushesWhenConnectedButBackgrounded(t *testing.T) {
+	conv := newFakeConvRepo()
+	delivery := &fakeDelivery{
+		reached:   map[domain.UserID]int{"peer": 1},
+		reachable: map[domain.UserID]bool{"peer": false},
+	}
+	notifier := &fakeNotifier{}
+	svc := NewChatService(conv, newFakeMsgRepo(), &fakeReadRepo{}, &fakeProfileRepo{},
+		&fakePetLink{shared: true}, delivery, notifier)
+	c, _ := conv.EnsureForPair(context.Background(), mustPair(t, "self", "peer"), uuid.New())
+
+	if _, err := svc.SendMessage(context.Background(), "self", c.ID, "client-1", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	waitForCalls(t, notifier, 1)
 }
 
 func TestSendMessage_RejectsNonMember(t *testing.T) {

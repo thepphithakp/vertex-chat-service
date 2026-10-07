@@ -48,12 +48,25 @@ type PetLink interface {
 	SharePet(ctx context.Context, a, b domain.UserID, petID uuid.UUID) (bool, error)
 }
 
-// Delivery คือ socket hub มองจาก application layer — คืนจำนวนที่ส่งถึงจริง
-// แทนที่จะมี IsOnline แยกต่างหาก กัน check-then-act race และกันมีสองทางถาม
-// คำถามเดียวกัน (reached==0 แปลว่า "ไม่มีใครต่ออยู่" ให้ fallback ไป push)
+// Delivery คือ socket hub มองจาก application layer — reached คือจำนวนที่
+// เขียนลง socket สำเร็จ ไม่ได้แปลว่าผู้รับเห็นแบบสด — พิสูจน์แล้วจาก
+// production ว่า iOS Safari ที่ถูกพับแอปยังรับ write เข้า OS buffer ได้สำเร็จ
+// (reached>0) ทั้งที่หน้าแอปถูก suspend ไม่ได้รับ event อะไรเลยจนกว่าจะเปิด
+// แอปเอง จึงต้องมี Reachable แยกต่างหากตอบคำถามที่ SendMessage ต้องการจริงๆ:
+// "มีสายไหนของ user นี้ที่เชื่อได้ว่า foreground อยู่ตอนนี้ไหม"
+//
+// reached กับ Reachable เป็นคนละคำถามโดยตั้งใจ ไม่รวมเป็นค่าเดียว — reached
+// ยังมีประโยชน์เป็นตัวเลขดิบ ส่วน Reachable คือตัวตัดสินใจ push fallback
+// เพียงอย่างเดียว ไม่ปนความหมายสองอย่างเข้าด้วยกัน
 type Delivery interface {
 	Deliver(user domain.UserID, frame ServerFrame) (reached int)
 	DeliverExcept(user domain.UserID, exceptSocket string, frame ServerFrame) (reached int)
+
+	// Reachable แทนที่ส่วน "reached == 0 แปลว่า fallback ไป push" เดิม —
+	// สายเปิดอยู่ (reached>0 ได้) ไม่ได้แปลว่า reachable อีกต่อไป ถ้าทุกสาย
+	// ของ user นั้นอยู่ background หรือยังไม่เคยรายงานสถานะเลย ต้องถือว่า
+	// ไม่ reachable (fail-safe: push เกินจำเป็นถูกกว่าข้อความเงียบหาย)
+	Reachable(user domain.UserID) bool
 }
 
 // PresenceNotifier คือทิศทางตรงข้ามของ Delivery — hub (adapter) เรียกเข้ามา

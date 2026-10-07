@@ -140,7 +140,17 @@ func (s *ChatService) SendMessage(ctx context.Context, self domain.UserID, convI
 	s.delivery.DeliverExcept(self, "", frame) // อุปกรณ์อื่นของผู้ส่งเอง (ถ้ามี)
 	reached := s.delivery.Deliver(peer, frame)
 
-	if reached == 0 && s.pushGate.allow(string(peer)+":"+convIDStr(convID)) {
+	// เดิมเช็ก reached == 0 — ผิดตอน peer มีสายเปิดอยู่แต่หน้าแอปถูกพับ (iOS
+	// ปิดหน้าจอ/สลับแอปไม่ได้แปลว่า "ไม่มีใครต่ออยู่" อีกต่อไปแล้ว แต่แปลว่า
+	// "ไม่มีสายไหนของ peer ที่หน้าแอปโชว์อยู่ตอนนี้" — Reachable() ตอบคำถาม
+	// นั้นตรงๆ (ดู root-cause ใน port.Delivery comment)
+	if !s.delivery.Reachable(peer) && s.pushGate.allow(string(peer)+":"+convIDStr(convID)) {
+		if reached > 0 {
+			// สัญญาณยืนยันว่า fix นี้กำลังทำงานจริง: ไม่ใช่แค่ "ไม่มีสายเลย"
+			// แต่ "มีสายแต่ไม่มีอันไหนอยู่ foreground" — เคสที่ bug เดิมพลาด
+			slog.DebugContext(ctx, "ยิง push ทั้งที่ reached>0 — ทุกสายของ peer อยู่ background/ไม่ยืนยันสถานะ",
+				"peer_id", peer, "reached", reached)
+		}
 		go func() {
 			ctx := context.WithoutCancel(ctx)
 			// title เดิมเป็น "ข้อความใหม่" เฉยๆ ไม่บอกว่าใครส่ง — ผู้ใช้เปิด
