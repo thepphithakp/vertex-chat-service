@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -236,6 +237,28 @@ func TestSendMessage_PushesWhenConnectedButBackgrounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForCalls(t, notifier, 1)
+}
+
+// TestSendMessage_EveryDistinctMessagePushesInQuickSuccession pin บั๊กจริงที่
+// เจอจาก production: ส่ง 5 ข้อความติดกันไม่ถึง 60 วินาที ได้ push แค่ 1 ครั้ง
+// เพราะ pushCooldown เดิมจำกัดไว้ 1 ครั้งต่อคู่สนทนาต่อนาที ไม่ว่าจะเป็นคนละ
+// ข้อความกันจริงแค่ไหน — ข้อความที่ไม่ใช่ retry (clientMsgId ต่างกัน) ทุกอัน
+// ต้องได้ push ของตัวเอง ไม่ถูก rate-limit ทับกัน
+func TestSendMessage_EveryDistinctMessagePushesInQuickSuccession(t *testing.T) {
+	conv := newFakeConvRepo()
+	delivery := &fakeDelivery{reachable: map[domain.UserID]bool{"peer": false}}
+	notifier := &fakeNotifier{}
+	svc := NewChatService(conv, newFakeMsgRepo(), &fakeReadRepo{}, &fakeProfileRepo{},
+		&fakePetLink{shared: true}, delivery, notifier)
+	c, _ := conv.EnsureForPair(context.Background(), mustPair(t, "self", "peer"), uuid.New())
+
+	for i := range 5 {
+		clientMsgID := domain.ClientMsgID(fmt.Sprintf("client-%d", i))
+		if _, err := svc.SendMessage(context.Background(), "self", c.ID, clientMsgID, "hello"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waitForCalls(t, notifier, 5)
 }
 
 func TestSendMessage_RejectsNonMember(t *testing.T) {

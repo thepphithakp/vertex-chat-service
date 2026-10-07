@@ -12,10 +12,6 @@ import (
 	"github.com/vertex/chat-service/internal/port"
 )
 
-// pushCooldown กันยิง push ซ้ำถี่ๆ ตอนอีกฝั่งส่งข้อความรัวๆ ขณะเราไม่ได้ต่อ
-// socket อยู่ — ยอมให้ข้อความแรกของ burst มาถึงเร็ว ที่เหลือรอ badge ในแอป
-const pushCooldown = 60 * time.Second
-
 type ChatService struct {
 	conversations port.ConversationRepository
 	messages      port.MessageRepository
@@ -25,10 +21,6 @@ type ChatService struct {
 	delivery      port.Delivery
 	notifier      port.Notifier
 	now           func() time.Time
-
-	// pushGate กันยิง push ซ้ำ — in-process เท่านั้น หายได้ตอน restart แต่
-	// ผลคือแค่อาจมี push เกินจำเป็นหนึ่งครั้ง ไม่ใช่ความถูกต้องของข้อมูล
-	pushGate *cooldownGate
 }
 
 func NewChatService(
@@ -49,7 +41,6 @@ func NewChatService(
 		delivery:      delivery,
 		notifier:      notifier,
 		now:           time.Now,
-		pushGate:      newCooldownGate(pushCooldown),
 	}
 }
 
@@ -138,25 +129,20 @@ func (s *ChatService) SendMessage(ctx context.Context, self domain.UserID, convI
 
 	frame := port.ChatMessageFrame{T: "chat.message", Message: toWireMessage(msg)}
 	s.delivery.DeliverExcept(self, "", frame) // อุปกรณ์อื่นของผู้ส่งเอง (ถ้ามี)
-	reached := s.delivery.Deliver(peer, frame)
-	peerReachable := s.delivery.Reachable(peer)
+	s.delivery.Deliver(peer, frame)
 
 	// เดิมเช็ก reached == 0 — ผิดตอน peer มีสายเปิดอยู่แต่หน้าแอปถูกพับ (iOS
 	// ปิดหน้าจอ/สลับแอปไม่ได้แปลว่า "ไม่มีใครต่ออยู่" อีกต่อไปแล้ว แต่แปลว่า
 	// "ไม่มีสายไหนของ peer ที่หน้าแอปโชว์อยู่ตอนนี้" — Reachable() ตอบคำถาม
 	// นั้นตรงๆ (ดู root-cause ใน port.Delivery comment)
 	//
-	// 🔧 debug ชั่วคราวสำหรับไล่บั๊ก push noti ที่ขึ้นแค่บางข้อความ — ลบออก
-	// หลังยืนยัน root cause แล้ว
-	slog.DebugContext(ctx, "push decision", "peer_id", peer, "reached", reached, "peer_reachable", peerReachable)
-
-	if !peerReachable && s.pushGate.allow(string(peer)+":"+convIDStr(convID)) {
-		if reached > 0 {
-			// สัญญาณยืนยันว่า fix นี้กำลังทำงานจริง: ไม่ใช่แค่ "ไม่มีสายเลย"
-			// แต่ "มีสายแต่ไม่มีอันไหนอยู่ foreground" — เคสที่ bug เดิมพลาด
-			slog.DebugContext(ctx, "ยิง push ทั้งที่ reached>0 — ทุกสายของ peer อยู่ background/ไม่ยืนยันสถานะ",
-				"peer_id", peer, "reached", reached)
-		}
+	// 🔴 เดิมมี pushGate (cooldown 60s ต่อคู่สนทนา) คั่นอยู่ตรงนี้ ถอดออกแล้ว
+	// เพราะมันกันข้อความที่ต่างกันจริงๆ ไม่ให้ขึ้น push ซ้ำซ้อนกับการกันซ้ำ
+	// ด้วย clientMsgId ข้างบน (!isNew) ที่ทำหน้าที่กันข้อความ "เดิม" ที่ถูก
+	// retry อยู่แล้ว — แอปแชทมาตรฐาน (iMessage/Line/WhatsApp) ก็ยิง push ทุก
+	// ข้อความใหม่จริง ไม่ rate-limit ฝั่ง server แบบนี้ (บั๊กที่เจอจริง: ส่ง
+	// 5 ข้อความติดกัน ขึ้น push แค่ข้อความเดียวเพราะ cooldown เดิม)
+	if !s.delivery.Reachable(peer) {
 		go func() {
 			ctx := context.WithoutCancel(ctx)
 			// title เดิมเป็น "ข้อความใหม่" เฉยๆ ไม่บอกว่าใครส่ง — ผู้ใช้เปิด
