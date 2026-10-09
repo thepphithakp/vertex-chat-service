@@ -15,12 +15,11 @@ import (
 )
 
 type ChatHandler struct {
-	useCase  port.ChatUseCase
-	profiles port.ProfileRepository
+	useCase port.ChatUseCase
 }
 
-func NewChatHandler(useCase port.ChatUseCase, profiles port.ProfileRepository) *ChatHandler {
-	return &ChatHandler{useCase: useCase, profiles: profiles}
+func NewChatHandler(useCase port.ChatUseCase) *ChatHandler {
+	return &ChatHandler{useCase: useCase}
 }
 
 func (h *ChatHandler) RegisterRoutes(r fiber.Router) {
@@ -34,13 +33,10 @@ func (h *ChatHandler) RegisterRoutes(r fiber.Router) {
 // touchProfile อัปเดตชื่อที่โชว์ของผู้ใช้จาก JWT claim ของเขาเอง — เรียกทุก
 // request ที่ยืนยันตัวตนแล้ว เพื่อให้ peer เห็นชื่อล่าสุดเสมอโดยไม่ต้องพึ่ง
 // auth-service เลย (ดู rationale ใน vertex-migrations/chat/migration/V1)
+//
+// ย้าย logic จริงไป ChatService.TouchProfile แล้ว — handler แค่ส่งต่อ
 func (h *ChatHandler) touchProfile(c *fiber.Ctx, actor middleware.Actor) {
-	if actor.Name == "" {
-		return
-	}
-	go func() {
-		_ = h.profiles.Touch(c.Context(), domain.UserID(actor.UserID), actor.Name)
-	}()
+	h.useCase.TouchProfile(c.UserContext(), domain.UserID(actor.UserID), actor.Name)
 }
 
 type openConversationRequest struct {
@@ -97,6 +93,7 @@ func (h *ChatHandler) ListMessages(c *fiber.Ctx) error {
 	if !ok {
 		return unauthorized(c)
 	}
+	h.touchProfile(c, actor)
 
 	convID, err := parseConvID(c)
 	if err != nil {
@@ -168,6 +165,7 @@ func (h *ChatHandler) MarkRead(c *fiber.Ctx) error {
 	if !ok {
 		return unauthorized(c)
 	}
+	h.touchProfile(c, actor)
 
 	convID, err := parseConvID(c)
 	if err != nil {
@@ -205,6 +203,14 @@ func handleUseCaseError(c *fiber.Ctx, err error) error {
 	if errors.As(err, &fe) {
 		return c.Status(fiber.StatusForbidden).JSON(fiber.Map{
 			"error": fe.Error(), "requestId": c.Get(middleware.HeaderRequestID),
+		})
+	}
+	// เดิมไม่มี branch นี้ — บทสนทนาที่ไม่มีจริงตกไปที่ 500 ข้างล่างเสมอ
+	// (repository คืน error type ของตัวเองที่ไม่มีใครเช็ค) แก้ที่ root cause
+	// แล้วด้วยให้ repository คืน domain.ErrConversationNotFound ตรงๆ
+	if errors.Is(err, domain.ErrConversationNotFound) {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": err.Error(), "requestId": c.Get(middleware.HeaderRequestID),
 		})
 	}
 	return fiber.NewError(fiber.StatusInternalServerError, err.Error())

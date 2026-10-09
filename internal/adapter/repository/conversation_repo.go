@@ -60,7 +60,7 @@ func (r *GORMConversationRepository) Get(ctx context.Context, id domain.Conversa
 	var row conversationRow
 	err := r.db.WithContext(ctx).Where("id = ?", uuid.UUID(id)).First(&row).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return domain.Conversation{}, &NotFoundError{What: "conversation"}
+		return domain.Conversation{}, domain.ErrConversationNotFound
 	}
 	if err != nil {
 		return domain.Conversation{}, err
@@ -188,7 +188,3 @@ func derefTime(p *time.Time) time.Time {
 	}
 	return *p
 }
-
-type NotFoundError struct{ What string }
-
-func (e *NotFoundError) Error() string { return e.What + " ไม่พบ" }

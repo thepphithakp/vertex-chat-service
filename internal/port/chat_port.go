@@ -33,8 +33,9 @@ type ReadStateRepository interface {
 }
 
 type ProfileRepository interface {
-	// Touch อัปเดตชื่อของ user เอง — เรียกทุก request ที่ยืนยันตัวตนแล้ว แต่ gate
-	// ด้วย TTL ในชั้น application ไม่ให้เขียนทุก request จริงๆ
+	// Touch อัปเดตชื่อของ user เอง — เรียกทุก request ที่ยืนยันตัวตนแล้ว ผ่าน
+	// ChatUseCase.TouchProfile ไม่มี TTL gate ใดๆ (ไม่มีจริง แก้ comment เดิม
+	// ที่อ้างว่ามี — ถ้าพบว่าปริมาณ write สูงเกินไปค่อยเพิ่ม gate จริงทีหลัง)
 	Touch(ctx context.Context, user domain.UserID, displayName string) error
 	// GetDisplayName คืนชื่อที่แสดงของ user ให้ชื่อว่างถ้ายังไม่เคย Touch เลย
 	// (ยังไม่เคยยิง request ที่ยืนยันตัวตนผ่าน chat-service มาก่อน) ผู้เรียก
@@ -95,4 +96,10 @@ type ChatUseCase interface {
 	ListMessages(ctx context.Context, self domain.UserID, convID domain.ConversationID, before *time.Time, limit int) ([]domain.Message, error)
 	SendMessage(ctx context.Context, self domain.UserID, convID domain.ConversationID, clientMsgID domain.ClientMsgID, body string) (domain.Message, error)
 	MarkRead(ctx context.Context, self domain.UserID, convID domain.ConversationID, through time.Time) error
+
+	// TouchProfile ย้ายมาจาก handler เดิมที่เรียก port.ProfileRepository.Touch
+	// ตรงๆ — ทำให้ caller ที่ไม่ผ่าน HTTP (ยังไม่มีตอนนี้ แต่ตามแบบเดียวกับ
+	// ที่ service อื่นกันไว้) ได้ behavior เดียวกัน และทำให้มีที่เรียกเดียว
+	// ไม่ต้องคอยจำว่า handler ไหนเรียกแล้วบ้าง (เดิมเรียกไม่ครบทุก handler)
+	TouchProfile(ctx context.Context, self domain.UserID, displayName string)
 }

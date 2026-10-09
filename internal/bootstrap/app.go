@@ -55,7 +55,7 @@ func NewApp(db *gorm.DB, cfg config.Config, auth middleware.AuthConfig) (*fiber.
 	hub.SetPresenceNotifier(svc) // circular ที่ระดับค่า ไม่ใช่ import — ดู hub.go
 	tickets := application.NewTicketService()
 
-	chatH := handler.NewChatHandler(svc, profiles)
+	chatH := handler.NewChatHandler(svc)
 	wsH := handler.NewWSHandler(tickets, cfg.WS.AllowedOrigins, cfg.WS.PublicBaseURL)
 
 	authed := app.Group("/api/v1/chat", middleware.NewAuth(auth))

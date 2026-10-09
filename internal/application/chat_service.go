@@ -44,6 +44,26 @@ func NewChatService(
 	}
 }
 
+// TouchProfile ย้ายมาจาก handler เดิมที่เรียก port.ProfileRepository.Touch
+// ตรงๆ จาก 3 ใน 5 handler (ไม่ครบ) — ย้ายมาที่นี่แล้วให้ caller (handler)
+// เรียกจากทุก endpoint ที่ยืนยันตัวตนแล้วให้ครบจริง ไม่ใช่เดาเอาว่า handler
+// ไหนต้อง "รู้จัก" เรียก
+//
+// ยิง async แบบเดิมทุกประการ (fire-and-forget ไม่บล็อก request หลัก) ใช้
+// context.WithoutCancel เหมือน push ใน SendMessage เพราะ ctx เดิมของ
+// request จะถูกยกเลิกทันทีที่ response ส่งออกไปแล้ว
+func (s *ChatService) TouchProfile(ctx context.Context, self domain.UserID, displayName string) {
+	if displayName == "" {
+		return
+	}
+	go func() {
+		ctx := context.WithoutCancel(ctx)
+		if err := s.profiles.Touch(ctx, self, displayName); err != nil {
+			slog.ErrorContext(ctx, "touch โปรไฟล์ไม่สำเร็จ", "user_id", self, "error", err)
+		}
+	}()
+}
+
 func (s *ChatService) OpenConversation(ctx context.Context, self, peerID domain.UserID, petID uuid.UUID) (domain.ConversationSummary, error) {
 	if petID == uuid.Nil {
 		return domain.ConversationSummary{}, &ValidationError{Field: "petId", Reason: "ต้องไม่ว่าง"}
